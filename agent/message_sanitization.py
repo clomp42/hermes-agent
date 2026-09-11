@@ -150,6 +150,22 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    # Pass 0.5: Multiple concatenated top-level JSON objects (e.g. models emitting multiple calls in one payload).
+    # Take the first valid JSON object rather than replacing everything with "{}" and wiping required fields.
+    try:
+        dec = json.JSONDecoder()
+        obj, idx = dec.raw_decode(raw_stripped)
+        if isinstance(obj, dict):
+            reserialised = json.dumps(obj, separators=(",", ":"))
+            if idx < len(raw_stripped):
+                logger.warning(
+                    "Repaired concatenated JSON in tool_call arguments for %s: kept first object (%d chars of %d)",
+                    tool_name, idx, len(raw_stripped),
+                )
+                return reserialised
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
     # Passes 1-3: strip trailing commas, close unclosed structures, trim excess closers (bounded).
     fixed = re.sub(r',\s*([}\]])', r'\1', raw_stripped)
     fixed += '}' * max(0, fixed.count('{') - fixed.count('}'))

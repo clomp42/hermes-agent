@@ -546,8 +546,24 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps({"part_index": part_index, "name": name, "thought_signature": thought_signature}, sort_keys=True)
-            if (slot := tool_call_indices.get(call_key)) is None:
+            fc_id = str(fc.get("id") or "")
+            call_key = json.dumps(
+                {
+                    "call_id": fc_id,
+                    "part_index": part_index,
+                    "name": name,
+                    "thought_signature": thought_signature,
+                },
+                sort_keys=True,
+            )
+            slot = tool_call_indices.get(call_key)
+            if slot is not None and not fc_id:
+                # If no explicit call_id was provided, verify this is actually a continuation/repeat
+                # of the same call rather than a distinct call with identical name/part_index.
+                last_args = str(slot.get("last_arguments") or "")
+                if last_args and args_str != last_args and not args_str.startswith(last_args):
+                    slot = None
+            if slot is None:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
             last_arguments = str(slot.get("last_arguments") or "")

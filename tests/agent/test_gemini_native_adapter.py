@@ -675,3 +675,44 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+def test_stream_event_translation_keeps_distinct_calls_across_separate_events():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event1 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "create_tx", "args": {"amt": 10}, "id": "call_1"}},
+                    ]
+                },
+                "finishReason": None,
+            }
+        ]
+    }
+    event2 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "create_tx", "args": {"amt": 20}, "id": "call_2"}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks1 = translate_stream_event(event1, model="gemini-3.8-flash", tool_call_indices=tool_call_indices)
+    chunks2 = translate_stream_event(event2, model="gemini-3.8-flash", tool_call_indices=tool_call_indices)
+
+    assert chunks1[0].choices[0].delta.tool_calls[0].index == 0
+    assert chunks1[0].choices[0].delta.tool_calls[0].id == "call_1"
+    assert chunks1[0].choices[0].delta.tool_calls[0].function.arguments == '{"amt": 10}'
+
+    assert chunks2[0].choices[0].delta.tool_calls[0].index == 1
+    assert chunks2[0].choices[0].delta.tool_calls[0].id == "call_2"
+    assert chunks2[0].choices[0].delta.tool_calls[0].function.arguments == '{"amt": 20}'
