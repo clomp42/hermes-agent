@@ -916,3 +916,60 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+def test_build_gemini_request_sampling_parameters_deprecated_on_gemini3():
+    """Gemini 3+ omits temperature and topP from generationConfig (romar#332)."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    gen_g3 = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-3.6-flash",
+        temperature=0.7,
+        top_p=0.95,
+    )["generationConfig"]
+    assert "temperature" not in gen_g3
+    assert "topP" not in gen_g3
+
+    gen_g2 = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        top_p=0.95,
+    )["generationConfig"]
+    assert gen_g2.get("temperature") == 0.7
+    assert gen_g2.get("topP") == 0.95
+
+
+def test_build_gemini_request_strips_thinking_budget_on_gemini3():
+    """Gemini 3+ remaps thinkingBudget to thinkingLevel and never emits thinkingBudget (romar#332)."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    # Budget 0 -> thinkingLevel minimal
+    gen_zero = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-3.6-flash",
+        thinking_config={"thinking_budget": 0, "include_thoughts": False},
+    )["generationConfig"]["thinkingConfig"]
+    assert gen_zero.get("thinkingLevel") == "minimal"
+    assert gen_zero.get("includeThoughts") is False
+    assert "thinkingBudget" not in gen_zero
+
+    # Positive budget -> thinkingLevel low/medium/high
+    gen_pos = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-3.6-flash",
+        thinking_config={"thinkingBudget": 2048, "includeThoughts": True},
+    )["generationConfig"]["thinkingConfig"]
+    assert gen_pos.get("thinkingLevel") == "medium"
+    assert "thinkingBudget" not in gen_pos
+
+    # Gemini 2.5 preserves thinkingBudget
+    gen_g2 = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-2.5-flash",
+        thinking_config={"thinkingBudget": 0, "includeThoughts": False},
+    )["generationConfig"]["thinkingConfig"]
+    assert gen_g2.get("thinkingBudget") == 0
+    assert "thinkingLevel" not in gen_g2
+

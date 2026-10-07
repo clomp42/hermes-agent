@@ -184,8 +184,10 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         # ``gemini-flash-latest`` alias); future majors are added only when the
         # API documents thinkingBudget for them. (#91927)
         config: dict[str, Any] = {"includeThoughts": False}
-        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
+        if normalized_model.startswith("gemini-2.5-"):
             config["thinkingBudget"] = 0
+        elif normalized_model.startswith("gemini-3") or normalized_model in ("gemini-flash-latest", "gemini-pro-latest"):
+            config["thinkingLevel"] = "minimal" if "3.6-flash" in normalized_model else "low"
         return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
     # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
@@ -196,13 +198,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
     # is stricter (low/high). Clamp Hermes' wider effort set to what each
     # family accepts so we never forward an undocumented level verbatim.
-    if normalized_model.startswith("gemini-3"):
-        if "flash" in normalized_model:
+    if normalized_model.startswith("gemini-3") or normalized_model in ("gemini-flash-latest", "gemini-pro-latest"):
+        if "pro" in normalized_model:
+            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
+        else:
             thinking_config["thinkingLevel"] = (
                 "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
             )
-        elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
     return thinking_config
 
 

@@ -109,7 +109,10 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     on the major version. Mirrors earendil-works/pi#7494 (their fix for the same class of bug in the
     google-shared converter).
     """
-    match = re.match(r"gemini-(\d+)", bare_gemini_model_id(model).lower())
+    name = bare_gemini_model_id(model).lower()
+    if name in ("gemini-flash-latest", "gemini-pro-latest"):
+        return True
+    match = re.match(r"gemini-(\d+)", name)
     return match is not None and int(match.group(1)) >= 3
 
 
@@ -467,12 +470,23 @@ _THINKING_KEYS = (
 )
 
 
-def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
+def _normalize_thinking_config(config: Any, *, is_gemini3: bool = False, model: str = "") -> Optional[Dict[str, Any]]:
     if not isinstance(config, dict):
         return None
     values = {key: config.get(key, config.get(alias)) for key, alias, _, _ in _THINKING_KEYS}
     normalized = {key: norm(values[key]) for key, _, types, norm in _THINKING_KEYS
                   if isinstance(values[key], types) and (values[key].strip() if isinstance(values[key], str) else True)}
+    if is_gemini3 and "thinkingBudget" in normalized:
+        budget = normalized.pop("thinkingBudget")
+        if "thinkingLevel" not in normalized:
+            if budget <= 0:
+                normalized["thinkingLevel"] = "minimal" if "3.6-flash" in model else "low"
+            elif budget <= 1024:
+                normalized["thinkingLevel"] = "low"
+            elif budget > 4096:
+                normalized["thinkingLevel"] = "high"
+            else:
+                normalized["thinkingLevel"] = "medium"
     return normalized or None
 
 
@@ -480,10 +494,12 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
     so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
     normalized = _normalize_thinking_config(thinking_config) or {}
-    budget, has_level = normalized.get("thinkingBudget"), "thinkingLevel" in normalized
+    budget = normalized.get("thinkingBudget")
+    level = normalized.get("thinkingLevel")
+    has_active_level = level is not None and level not in ("minimal", "none")
     if normalized.get("includeThoughts") is False:
-        return has_level or bool(budget)
-    return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
+        return (level is not None and level not in ("minimal", "none", "low")) or (isinstance(budget, int) and budget > 0)
+    return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_active_level) and (level not in ("minimal", "none") if level else True)
 
 
 def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any) -> int:
@@ -531,10 +547,14 @@ def build_gemini_request(
     optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
+    # On Gemini 3+, custom sampling parameters (temperature, top_p, top_k) and thinking_budget are deprecated
+    # and hard-error on upcoming models; omit sampling params and strip thinkingBudget.
+    req_temperature = None if is_gemini3 else temperature
+    req_top_p = None if is_gemini3 else top_p
     generation = (
-        ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
-        ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
-        ("thinkingConfig", _normalize_thinking_config(thinking_config)),
+        ("temperature", req_temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
+        ("topP", req_top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
+        ("thinkingConfig", _normalize_thinking_config(thinking_config, is_gemini3=is_gemini3, model=model)),
     )
     json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
     # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
