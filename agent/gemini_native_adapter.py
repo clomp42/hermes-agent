@@ -100,6 +100,15 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+def is_gemini3_plus(model: str) -> bool:
+    """True for Gemini 3+ models (including moving aliases)."""
+    name = bare_gemini_model_id(model).lower()
+    if name in ("gemini-flash-latest", "gemini-pro-latest"):
+        return True
+    match = re.match(r"gemini-(\d+)", name)
+    return match is not None and int(match.group(1)) >= 3
+
+
 def gemini_requires_tool_call_ids(model: str) -> bool:
     """Gemini 3+ needs explicit functionCall/functionResponse ids so replayed parallel tool calls
     pair with their responses; 2.x rejects the field.
@@ -109,11 +118,13 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     on the major version. Mirrors earendil-works/pi#7494 (their fix for the same class of bug in the
     google-shared converter).
     """
-    name = bare_gemini_model_id(model).lower()
-    if name in ("gemini-flash-latest", "gemini-pro-latest"):
-        return True
-    match = re.match(r"gemini-(\d+)", name)
-    return match is not None and int(match.group(1)) >= 3
+    return is_gemini3_plus(model)
+
+
+def is_gemini_sampling_deprecated(model: str) -> bool:
+    """True for Gemini 3+ models where sampling parameters (temperature, top_p, top_k)
+    and thinking_budget are deprecated (romar#332)."""
+    return is_gemini3_plus(model)
 
 
 _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
@@ -479,8 +490,9 @@ def _normalize_thinking_config(config: Any, *, is_gemini3: bool = False, model: 
     if is_gemini3 and "thinkingBudget" in normalized:
         budget = normalized.pop("thinkingBudget")
         if "thinkingLevel" not in normalized:
+            norm_model = bare_gemini_model_id(model).lower()
             if budget <= 0:
-                normalized["thinkingLevel"] = "minimal" if "3.6-flash" in model else "low"
+                normalized["thinkingLevel"] = "minimal" if "3.6-flash" in norm_model else "low"
             elif budget <= 1024:
                 normalized["thinkingLevel"] = "low"
             elif budget > 4096:
@@ -490,10 +502,10 @@ def _normalize_thinking_config(config: Any, *, is_gemini3: bool = False, model: 
     return normalized or None
 
 
-def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
+def _thinking_requests_output_headroom(thinking_config: Any, *, is_gemini3: bool = False, model: str = "") -> bool:
     """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
     so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
-    normalized = _normalize_thinking_config(thinking_config) or {}
+    normalized = _normalize_thinking_config(thinking_config, is_gemini3=is_gemini3, model=model) or {}
     budget = normalized.get("thinkingBudget")
     level = normalized.get("thinkingLevel")
     has_active_level = level is not None and level not in ("minimal", "none")
@@ -502,7 +514,7 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_active_level) and (level not in ("minimal", "none") if level else True)
 
 
-def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any) -> int:
+def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any, *, is_gemini3: bool = False, model: str = "") -> int:
     """Native ``maxOutputTokens``: an omitted/invalid cap becomes the published ceiling (Gemini
     truncates on its low internal default); an explicit cap is raised to the ceiling when
     thinking is enabled so thoughts don't starve the answer."""
@@ -510,7 +522,7 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
         requested = int(max_tokens)
     except (TypeError, ValueError):
         requested = 0
-    if requested <= 0 or _thinking_requests_output_headroom(thinking_config):
+    if requested <= 0 or _thinking_requests_output_headroom(thinking_config, is_gemini3=is_gemini3, model=model):
         return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
     return requested
 
@@ -540,7 +552,7 @@ def build_gemini_request(
     response_format: Any = None, model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
-    is_gemini3 = gemini_requires_tool_call_ids(model)
+    is_gemini3 = is_gemini3_plus(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
     gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
     tool_config = _translate_tool_choice_to_gemini(tool_choice)
@@ -552,7 +564,7 @@ def build_gemini_request(
     req_temperature = None if is_gemini3 else temperature
     req_top_p = None if is_gemini3 else top_p
     generation = (
-        ("temperature", req_temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
+        ("temperature", req_temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config, is_gemini3=is_gemini3, model=model)),
         ("topP", req_top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config, is_gemini3=is_gemini3, model=model)),
     )

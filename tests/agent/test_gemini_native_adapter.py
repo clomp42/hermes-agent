@@ -973,3 +973,33 @@ def test_build_gemini_request_strips_thinking_budget_on_gemini3():
     assert gen_g2.get("thinkingBudget") == 0
     assert "thinkingLevel" not in gen_g2
 
+
+def test_gemini3_helpers_and_case_insensitivity():
+    """Gemini 3+ helpers and normalization are case-insensitive and modular (romar#332)."""
+    from agent.gemini_native_adapter import (
+        is_gemini3_plus,
+        is_gemini_sampling_deprecated,
+        gemini_requires_tool_call_ids,
+        _normalize_thinking_config,
+        _thinking_requests_output_headroom,
+    )
+
+    for m in ("gemini-3.6-flash", "GEMINI-3.6-FLASH", "google/gemini-3.8-flash", "gemini-flash-latest"):
+        assert is_gemini3_plus(m) is True
+        assert is_gemini_sampling_deprecated(m) is True
+        assert gemini_requires_tool_call_ids(m) is True
+
+    for m in ("gemini-2.5-flash", "gemini-1.5-pro", "gpt-4o"):
+        assert is_gemini3_plus(m) is False
+        assert is_gemini_sampling_deprecated(m) is False
+
+    # Case-insensitive model check for 3.6-flash minimal level
+    norm_upper = _normalize_thinking_config({"thinkingBudget": 0}, is_gemini3=True, model="GEMINI-3.6-FLASH")
+    assert norm_upper is not None
+    assert norm_upper.get("thinkingLevel") == "minimal"
+
+    # Headroom check on Gemini 3+ with budget 0 does not request headroom
+    assert _thinking_requests_output_headroom(
+        {"thinkingBudget": 0, "includeThoughts": False}, is_gemini3=True, model="gemini-3.6-flash"
+    ) is False
+
